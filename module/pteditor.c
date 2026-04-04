@@ -367,9 +367,16 @@ static inline size_t measure_cache_line_access(void* ptr) {
   unsigned long long end;
   volatile size_t value;
 
-  asm volatile("mfence\n\tlfence\n\trdtscp\n\t" : "=A"(start), "=c"(aux) : : "memory");
+  asm volatile(
+    "mfence\n"
+    "lfence\n"
+    "rdtscp\n" : 
+  "=A"(start), "=c"(aux) : : "memory");
   value = *(volatile size_t*)ptr;
-  asm volatile("lfence\n\trdtscp\n\t" : "=A"(end), "=c"(aux) : : "memory");
+  asm volatile(
+    "lfence\n"
+    "rdtscp\n" 
+    : "=A"(end), "=c"(aux) : : "memory");
   (void)value;
   asm volatile("lfence" : : : "memory");
   return (size_t)(end - start);
