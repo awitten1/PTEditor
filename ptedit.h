@@ -648,6 +648,30 @@ ptedit_fnc void ptedit_invalidate_tlb(void* address);
 ptedit_fnc void ptedit_invalidate_tlb_pid(pid_t pid, void* address);
 
  /**
+  * Flushes the cache lines of the page-table entries of an address and can
+  * invalidate the TLB afterwards.
+  *
+  * @param[in] address The address to flush
+  * @param[in] pid The pid of the process (0 for own process)
+  * @param[in] levels Bitmask of PTEDIT_FLUSH_LEVEL_* values
+  * @param[in] flags Bitmask of PTEDIT_FLUSH_FLAG_* values
+  *
+  * @return 0 on success, -1 on failure
+  */
+ptedit_fnc int ptedit_flush_address_cache(void* address, pid_t pid, size_t levels, size_t flags);
+
+ /**
+  * Measures access latency for the page-table entries of an address and returns
+  * the observed cycles and cache-hit classification.
+  *
+  * @param[in,out] test Input: pid, address, levels, threshold. Output: valid,
+  * cached, and per-level cycle counters.
+  *
+  * @return 0 on success, -1 on failure
+  */
+ptedit_fnc int ptedit_test_address_cache(ptedit_cache_test_t* test);
+
+ /**
   * Change the method used for flushing the TLB (either kernel or custom function)
   *
   * @param[in] implementation The implementation to use, either PTEDITOR_TLB_INVALIDATION_KERNEL or PTEDITOR_TLB_INVALIDATION_CUSTOM

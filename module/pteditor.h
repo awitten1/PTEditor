@@ -98,11 +98,40 @@ typedef struct {
     void* address;
 } ptedit_invalidate_tlb_args_t;
 
+typedef struct {
+    pid_t pid;
+    void* address;
+    size_t levels;
+    size_t flags;
+} ptedit_cache_flush_args_t;
+
+typedef struct {
+    pid_t pid;
+    void* address;
+    size_t levels;
+    size_t threshold;
+    size_t valid;
+    size_t cached;
+    size_t pgd_cycles;
+    size_t p4d_cycles;
+    size_t pud_cycles;
+    size_t pmd_cycles;
+    size_t pte_cycles;
+} ptedit_cache_test_t;
+
 #define PTEDIT_VALID_MASK_PGD (1<<0)
 #define PTEDIT_VALID_MASK_P4D (1<<1)
 #define PTEDIT_VALID_MASK_PUD (1<<2)
 #define PTEDIT_VALID_MASK_PMD (1<<3)
 #define PTEDIT_VALID_MASK_PTE (1<<4)
+
+#define PTEDIT_FLUSH_LEVEL_PGD PTEDIT_VALID_MASK_PGD
+#define PTEDIT_FLUSH_LEVEL_P4D PTEDIT_VALID_MASK_P4D
+#define PTEDIT_FLUSH_LEVEL_PUD PTEDIT_VALID_MASK_PUD
+#define PTEDIT_FLUSH_LEVEL_PMD PTEDIT_VALID_MASK_PMD
+#define PTEDIT_FLUSH_LEVEL_PTE PTEDIT_VALID_MASK_PTE
+
+#define PTEDIT_FLUSH_FLAG_TLB (1<<0)
 
 #define PTEDITOR_TLB_INVALIDATION_KERNEL 0
 #define PTEDITOR_TLB_INVALIDATION_CUSTOM 1
@@ -151,6 +180,12 @@ typedef struct {
 
 #define PTEDITOR_IOCTL_CMD_INVALIDATE_TLB_PID \
   _IOR(PTEDITOR_IOCTL_MAGIC_NUMBER, 14, size_t)
+
+#define PTEDITOR_IOCTL_CMD_FLUSH_CACHES \
+  _IOR(PTEDITOR_IOCTL_MAGIC_NUMBER, 15, size_t)
+
+#define PTEDITOR_IOCTL_CMD_TEST_CACHES \
+  _IOR(PTEDITOR_IOCTL_MAGIC_NUMBER, 16, size_t)
 #else
 #define PTEDITOR_READ_PAGE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define PTEDITOR_WRITE_PAGE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_READ_DATA)

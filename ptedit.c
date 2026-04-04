@@ -674,6 +674,31 @@ ptedit_fnc void ptedit_invalidate_tlb(void* address) {
 }
 
 // ---------------------------------------------------------------------------
+ptedit_fnc int ptedit_flush_address_cache(void* address, pid_t pid, size_t levels, size_t flags) {
+#if defined(LINUX)
+    ptedit_cache_flush_args_t args;
+    args.pid = pid;
+    args.address = address;
+    args.levels = levels;
+    args.flags = flags;
+    return (int)ioctl(ptedit_fd, PTEDITOR_IOCTL_CMD_FLUSH_CACHES, (size_t)&args);
+#else
+    NO_WINDOWS_SUPPORT
+    return -1;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+ptedit_fnc int ptedit_test_address_cache(ptedit_cache_test_t* test) {
+#if defined(LINUX)
+    return (int)ioctl(ptedit_fd, PTEDITOR_IOCTL_CMD_TEST_CACHES, (size_t)test);
+#else
+    NO_WINDOWS_SUPPORT
+    return -1;
+#endif
+}
+
+// ---------------------------------------------------------------------------
 ptedit_fnc int ptedit_switch_tlb_invalidation(int implementation) {
 #if defined(LINUX)
     return (int) ioctl(ptedit_fd, PTEDITOR_IOCTL_CMD_SWITCH_TLB_INVALIDATION, (size_t) implementation);

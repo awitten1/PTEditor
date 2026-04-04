@@ -100,11 +100,40 @@ typedef struct {
     void* address;
 } ptedit_invalidate_tlb_args_t;
 
+typedef struct {
+    pid_t pid;
+    void* address;
+    size_t levels;
+    size_t flags;
+} ptedit_cache_flush_args_t;
+
+typedef struct {
+    pid_t pid;
+    void* address;
+    size_t levels;
+    size_t threshold;
+    size_t valid;
+    size_t cached;
+    size_t pgd_cycles;
+    size_t p4d_cycles;
+    size_t pud_cycles;
+    size_t pmd_cycles;
+    size_t pte_cycles;
+} ptedit_cache_test_t;
+
 #define PTEDIT_VALID_MASK_PGD (1<<0)
 #define PTEDIT_VALID_MASK_P4D (1<<1)
 #define PTEDIT_VALID_MASK_PUD (1<<2)
 #define PTEDIT_VALID_MASK_PMD (1<<3)
 #define PTEDIT_VALID_MASK_PTE (1<<4)
+
+#define PTEDIT_FLUSH_LEVEL_PGD PTEDIT_VALID_MASK_PGD
+#define PTEDIT_FLUSH_LEVEL_P4D PTEDIT_VALID_MASK_P4D
+#define PTEDIT_FLUSH_LEVEL_PUD PTEDIT_VALID_MASK_PUD
+#define PTEDIT_FLUSH_LEVEL_PMD PTEDIT_VALID_MASK_PMD
+#define PTEDIT_FLUSH_LEVEL_PTE PTEDIT_VALID_MASK_PTE
+
+#define PTEDIT_FLUSH_FLAG_TLB (1<<0)
 
 #define PTEDITOR_TLB_INVALIDATION_KERNEL 0
 #define PTEDITOR_TLB_INVALIDATION_CUSTOM 1
@@ -153,6 +182,12 @@ typedef struct {
 
 #define PTEDITOR_IOCTL_CMD_INVALIDATE_TLB_PID \
   _IOR(PTEDITOR_IOCTL_MAGIC_NUMBER, 14, size_t)
+
+#define PTEDITOR_IOCTL_CMD_FLUSH_CACHES \
+  _IOR(PTEDITOR_IOCTL_MAGIC_NUMBER, 15, size_t)
+
+#define PTEDITOR_IOCTL_CMD_TEST_CACHES \
+  _IOR(PTEDITOR_IOCTL_MAGIC_NUMBER, 16, size_t)
 #else
 #define PTEDITOR_READ_PAGE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define PTEDITOR_WRITE_PAGE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_READ_DATA)
@@ -814,6 +849,30 @@ ptedit_fnc void ptedit_invalidate_tlb(void* address);
   *
   */
 ptedit_fnc void ptedit_invalidate_tlb_pid(pid_t pid, void* address);
+
+ /**
+  * Flushes the cache lines of the page-table entries of an address and can
+  * invalidate the TLB afterwards.
+  *
+  * @param[in] address The address to flush
+  * @param[in] pid The pid of the process (0 for own process)
+  * @param[in] levels Bitmask of PTEDIT_FLUSH_LEVEL_* values
+  * @param[in] flags Bitmask of PTEDIT_FLUSH_FLAG_* values
+  *
+  * @return 0 on success, -1 on failure
+  */
+ptedit_fnc int ptedit_flush_address_cache(void* address, pid_t pid, size_t levels, size_t flags);
+
+ /**
+  * Measures access latency for the page-table entries of an address and returns
+  * the observed cycles and cache-hit classification.
+  *
+  * @param[in,out] test Input: pid, address, levels, threshold. Output: valid,
+  * cached, and per-level cycle counters.
+  *
+  * @return 0 on success, -1 on failure
+  */
+ptedit_fnc int ptedit_test_address_cache(ptedit_cache_test_t* test);
 
  /**
   * Change the method used for flushing the TLB (either kernel or custom function)
@@ -1669,6 +1728,31 @@ ptedit_fnc void ptedit_invalidate_tlb(void* address) {
     size_t vaddr = (size_t)address;
     DWORD returnLength;
     DeviceIoControl(ptedit_fd, PTEDITOR_FLUSH_TLB, (LPVOID)&vaddr, sizeof(vaddr), (LPVOID)&vaddr, sizeof(vaddr), &returnLength, 0);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+ptedit_fnc int ptedit_flush_address_cache(void* address, pid_t pid, size_t levels, size_t flags) {
+#if defined(LINUX)
+    ptedit_cache_flush_args_t args;
+    args.pid = pid;
+    args.address = address;
+    args.levels = levels;
+    args.flags = flags;
+    return (int)ioctl(ptedit_fd, PTEDITOR_IOCTL_CMD_FLUSH_CACHES, (size_t)&args);
+#else
+    NO_WINDOWS_SUPPORT
+    return -1;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+ptedit_fnc int ptedit_test_address_cache(ptedit_cache_test_t* test) {
+#if defined(LINUX)
+    return (int)ioctl(ptedit_fd, PTEDITOR_IOCTL_CMD_TEST_CACHES, (size_t)test);
+#else
+    NO_WINDOWS_SUPPORT
+    return -1;
 #endif
 }
 

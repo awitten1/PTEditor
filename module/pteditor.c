@@ -138,6 +138,7 @@ void (*invalidate_tlb)(pid_t, void*);
 void (*flush_tlb_mm_range_func)(struct mm_struct*, unsigned long, unsigned long, unsigned int, bool);
 void (*native_write_cr4_func)(unsigned long);
 static struct mm_struct* get_mm(size_t);
+static int resolve_vm_ext(size_t addr, vm_t* entry, int lock, int unmap_pte);
 
 static int device_open(struct inode *inode, struct file *file) {
   /* Check if device is busy */
@@ -242,7 +243,7 @@ static struct mm_struct* get_mm(size_t pid) {
   return NULL;
 }
 
-static int resolve_vm(size_t addr, vm_t* entry, int lock) {
+static int resolve_vm_ext(size_t addr, vm_t* entry, int lock, int unmap_pte) {
   struct mm_struct *mm;
 
   if(!entry) return 1;
@@ -321,8 +322,10 @@ static int resolve_vm(size_t addr, vm_t* entry, int lock) {
   }
   entry->valid |= PTEDIT_VALID_MASK_PTE;
 
-  /* Unmap PTE, fine on x86 and ARM64 -> unmap is NOP */
-  pte_unmap(entry->pte);
+  if (unmap_pte) {
+    /* Unmap PTE, fine on x86 and ARM64 -> unmap is NOP */
+    pte_unmap(entry->pte);
+  }
 
   /* Unlock mm */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
@@ -343,6 +346,163 @@ error_out:
 #endif
 
   return 1;
+}
+
+static int resolve_vm(size_t addr, vm_t* entry, int lock) {
+  return resolve_vm_ext(addr, entry, lock, 1);
+}
+
+static inline void flush_cache_line(void* ptr) {
+#if defined(__i386__) || defined(__x86_64__)
+  asm volatile("clflush (%0)" : : "r"(ptr) : "memory");
+#elif defined(__aarch64__)
+  asm volatile("dc civac, %0" : : "r"(ptr) : "memory");
+#endif
+}
+
+static inline size_t measure_cache_line_access(void* ptr) {
+#if defined(__i386__) || defined(__x86_64__)
+  unsigned int aux;
+  unsigned long long start;
+  unsigned long long end;
+  volatile size_t value;
+
+  asm volatile(
+    "mfence\n"
+    "lfence\n"
+    "rdtscp\n" : 
+  "=A"(start), "=c"(aux) : : "memory");
+  value = *(volatile size_t*)ptr;
+  asm volatile(
+    "lfence\n"
+    "rdtscp\n" 
+    : "=A"(end), "=c"(aux) : : "memory");
+  (void)value;
+  asm volatile("lfence" : : : "memory");
+  return (size_t)(end - start);
+#elif defined(__aarch64__)
+  volatile size_t value;
+  value = *(volatile size_t*)ptr;
+  (void)value;
+  return 0;
+#endif
+}
+
+static int flush_address_cache(ptedit_cache_flush_args_t* args, int lock) {
+  vm_t vm;
+  struct mm_struct *mm = get_mm(args->pid);
+  if (!mm) return -1;
+
+  vm.pid = args->pid;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+  if (lock) mmap_read_lock(mm);
+#else
+  if (lock) down_read(&mm->mmap_sem);
+#endif
+
+  if (resolve_vm_ext((size_t)args->address, &vm, 0, 0)) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+    if (lock) mmap_read_unlock(mm);
+#else
+    if (lock) up_read(&mm->mmap_sem);
+#endif
+    return -1;
+  }
+
+  if ((args->levels & PTEDIT_FLUSH_LEVEL_PGD) && (vm.valid & PTEDIT_VALID_MASK_PGD)) flush_cache_line(vm.pgd);
+  if ((args->levels & PTEDIT_FLUSH_LEVEL_P4D) && (vm.valid & PTEDIT_VALID_MASK_P4D)) flush_cache_line(vm.p4d);
+  if ((args->levels & PTEDIT_FLUSH_LEVEL_PUD) && (vm.valid & PTEDIT_VALID_MASK_PUD)) flush_cache_line(vm.pud);
+  if ((args->levels & PTEDIT_FLUSH_LEVEL_PMD) && (vm.valid & PTEDIT_VALID_MASK_PMD)) flush_cache_line(vm.pmd);
+  if ((args->levels & PTEDIT_FLUSH_LEVEL_PTE) && (vm.valid & PTEDIT_VALID_MASK_PTE)) flush_cache_line(vm.pte);
+
+#if defined(__i386__) || defined(__x86_64__)
+  asm volatile("mfence" : : : "memory");
+#elif defined(__aarch64__)
+  asm volatile("dsb ish" : : : "memory");
+  asm volatile("isb");
+#endif
+
+  if (vm.valid & PTEDIT_VALID_MASK_PTE) {
+    pte_unmap(vm.pte);
+  }
+
+  if (args->flags & PTEDIT_FLUSH_FLAG_TLB) {
+    invalidate_tlb(args->pid, args->address);
+  }
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+  if (lock) mmap_read_unlock(mm);
+#else
+  if (lock) up_read(&mm->mmap_sem);
+#endif
+
+  return 0;
+}
+
+static int test_address_cache(ptedit_cache_test_t* test, int lock) {
+  vm_t vm;
+  struct mm_struct *mm = get_mm(test->pid);
+  if (!mm) return -1;
+
+  vm.pid = test->pid;
+  test->valid = 0;
+  test->cached = 0;
+  test->pgd_cycles = 0;
+  test->p4d_cycles = 0;
+  test->pud_cycles = 0;
+  test->pmd_cycles = 0;
+  test->pte_cycles = 0;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+  if (lock) mmap_read_lock(mm);
+#else
+  if (lock) down_read(&mm->mmap_sem);
+#endif
+
+  if (resolve_vm_ext((size_t)test->address, &vm, 0, 0)) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+    if (lock) mmap_read_unlock(mm);
+#else
+    if (lock) up_read(&mm->mmap_sem);
+#endif
+    return -1;
+  }
+
+  test->valid = vm.valid;
+
+  if ((test->levels & PTEDIT_FLUSH_LEVEL_PGD) && (vm.valid & PTEDIT_VALID_MASK_PGD)) {
+    test->pgd_cycles = measure_cache_line_access(vm.pgd);
+    if (test->pgd_cycles <= test->threshold) test->cached |= PTEDIT_VALID_MASK_PGD;
+  }
+  if ((test->levels & PTEDIT_FLUSH_LEVEL_P4D) && (vm.valid & PTEDIT_VALID_MASK_P4D)) {
+    test->p4d_cycles = measure_cache_line_access(vm.p4d);
+    if (test->p4d_cycles <= test->threshold) test->cached |= PTEDIT_VALID_MASK_P4D;
+  }
+  if ((test->levels & PTEDIT_FLUSH_LEVEL_PUD) && (vm.valid & PTEDIT_VALID_MASK_PUD)) {
+    test->pud_cycles = measure_cache_line_access(vm.pud);
+    if (test->pud_cycles <= test->threshold) test->cached |= PTEDIT_VALID_MASK_PUD;
+  }
+  if ((test->levels & PTEDIT_FLUSH_LEVEL_PMD) && (vm.valid & PTEDIT_VALID_MASK_PMD)) {
+    test->pmd_cycles = measure_cache_line_access(vm.pmd);
+    if (test->pmd_cycles <= test->threshold) test->cached |= PTEDIT_VALID_MASK_PMD;
+  }
+  if ((test->levels & PTEDIT_FLUSH_LEVEL_PTE) && (vm.valid & PTEDIT_VALID_MASK_PTE)) {
+    test->pte_cycles = measure_cache_line_access(vm.pte);
+    if (test->pte_cycles <= test->threshold) test->cached |= PTEDIT_VALID_MASK_PTE;
+  }
+
+  if (vm.valid & PTEDIT_VALID_MASK_PTE) {
+    pte_unmap(vm.pte);
+  }
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+  if (lock) mmap_read_unlock(mm);
+#else
+  if (lock) up_read(&mm->mmap_sem);
+#endif
+
+  return 0;
 }
 
 
@@ -567,6 +727,22 @@ static long device_ioctl(struct file *file, unsigned int ioctl_num, unsigned lon
         // this is implemented as its own call to stay backwards compatible
         // even in case a user uses the old ioctl calls
         invalidate_tlb(task_pid_nr(current), (void*) ioctl_param);
+        return 0;
+    }
+    case PTEDITOR_IOCTL_CMD_FLUSH_CACHES:
+    {
+        ptedit_cache_flush_args_t args;
+        (void)from_user(&args, (void*)ioctl_param, sizeof(args));
+        return flush_address_cache(&args, !mm_is_locked);
+    }
+    case PTEDITOR_IOCTL_CMD_TEST_CACHES:
+    {
+        ptedit_cache_test_t test;
+        (void)from_user(&test, (void*)ioctl_param, sizeof(test));
+        if (test_address_cache(&test, !mm_is_locked)) {
+            return -1;
+        }
+        (void)to_user((void*)ioctl_param, &test, sizeof(test));
         return 0;
     }
     case PTEDITOR_IOCTL_CMD_GET_PAT:
